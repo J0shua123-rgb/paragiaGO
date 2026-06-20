@@ -66,3 +66,62 @@ create policy "driver_locations_self_update" on public.driver_locations
     for update to authenticated
     using  ( (select auth.uid()) = driver_id )
     with check ( (select auth.uid()) = driver_id );
+
+-- ---------------------------------------------------------------------------
+-- Mobile Money (MoMo) Payment Infrastructure
+-- ---------------------------------------------------------------------------
+
+-- Store the provider's transaction hash on the ride row after payment clears
+alter table public.rides
+    add column if not exists payment_reference text default null;
+
+-- Atomic payment settlement function.
+-- Called by the /api/v1/payments/momo-callback webhook on a 'success' event.
+-- All three mutations (ride → completed, payment_reference, wallet credit)
+-- execute inside a single implicit plpgsql transaction — all or nothing.
+create or replace function process_momo_payment(
+    p_ride_id               uuid,
+    p_driver_id             uuid,
+    p_transaction_reference text,
+    p_amount_ghs            numeric
+)
+returns jsonb
+language plpgsql as $$
+declare
+    v_ride_updated   int;
+    v_driver_updated int;
+begin
+    -- Guard: only transition rides that are currently 'ongoing'
+    update public.rides
+    set
+        status            = 'completed',
+        payment_reference = p_transaction_reference
+    where id     = p_ride_id
+      and status = 'ongoing';
+
+    get diagnostics v_ride_updated = row_count;
+
+    if v_ride_updated = 0 then
+        raise exception 'Ride is not in ongoing status or does not exist (ride_id: %)', p_ride_id;
+    end if;
+
+    -- Credit the driver wallet atomically in the same transaction
+    update public.drivers_metadata
+    set wallet_balance = wallet_balance + p_amount_ghs
+    where id = p_driver_id;
+
+    get diagnostics v_driver_updated = row_count;
+
+    if v_driver_updated = 0 then
+        raise exception 'Driver not found in drivers_metadata (driver_id: %)', p_driver_id;
+    end if;
+
+    return jsonb_build_object(
+        'ride_id',               p_ride_id,
+        'driver_id',             p_driver_id,
+        'transaction_reference', p_transaction_reference,
+        'amount_credited_ghs',   p_amount_ghs
+    );
+end;
+$$;
+

@@ -1,5 +1,6 @@
 import os
-from fastapi import FastAPI, HTTPException, status
+import secrets
+from fastapi import FastAPI, HTTPException, Request, status
 from pydantic import BaseModel, Field
 from supabase import create_client, Client
 
@@ -7,7 +8,9 @@ app = FastAPI(title="PragiaGo Engine", version="1.0.0")
 
 # Fetch Supabase environment variables
 SUPABASE_URL = os.environ.get("SUPABASE_URL")
-SUPABASE_KEY = os.environ.get("SUPABASE_ANON_KEY")
+SUPABASE_KEY           = os.environ.get("SUPABASE_ANON_KEY")
+# Shared secret configured in your MoMo provider's webhook dashboard
+MOMO_WEBHOOK_SECRET    = os.environ.get("MOMO_WEBHOOK_SECRET", "")
 
 # Initialize Supabase Client
 supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
@@ -48,6 +51,14 @@ class DriverLocationUpdate(BaseModel):
 class AcceptRideRequest(BaseModel):
     ride_id:   str = Field(..., description="UUID of the ride to accept")
     driver_id: str = Field(..., description="Driver's auth user UUID")
+
+
+class MoMoCallbackPayload(BaseModel):
+    transaction_reference: str   = Field(..., description="Unique hash from the MoMo provider")
+    status:                str   = Field(..., description="'success' or 'failed'")
+    amount_ghs:            float = Field(..., gt=0, description="Amount paid in GHS")
+    ride_id:               str   = Field(..., description="UUID of the associated ride")
+    driver_id:             str   = Field(..., description="UUID of the driver to credit")
 
 
 # ---------------------------------------------------------------------------
@@ -235,3 +246,75 @@ async def accept_ride(payload: AcceptRideRequest):
         raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+
+
+# ---------------------------------------------------------------------------
+# Mobile Money (MoMo) Payment Webhook
+# ---------------------------------------------------------------------------
+
+@app.post("/api/v1/payments/momo-callback", status_code=status.HTTP_200_OK)
+async def momo_payment_callback(payload: MoMoCallbackPayload, request: Request):
+    """
+    Secure webhook receiver for Ghanaian Mobile Money payment notifications.
+
+    Security: The provider must send the shared MOMO_WEBHOOK_SECRET value in
+    the 'X-MoMo-Webhook-Secret' header. `secrets.compare_digest` is used for
+    constant-time comparison to prevent timing-based attacks.
+
+    On 'success':
+      Calls the atomic `process_momo_payment` PostgreSQL function which, inside
+      a single transaction, marks the ride 'completed', stamps payment_reference,
+      and increments the driver's wallet_balance — all or nothing.
+
+    On 'failed':
+      Acknowledges receipt so the provider does not retry; future work can
+      notify the passenger and reset the ride status.
+    """
+    # --- Webhook authentication -------------------------------------------
+    incoming_secret = request.headers.get("X-MoMo-Webhook-Secret", "")
+    if not secrets.compare_digest(incoming_secret, MOMO_WEBHOOK_SECRET):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Invalid or missing webhook secret.",
+        )
+
+    # --- Conditional payment logic ----------------------------------------
+    if payload.status == "success":
+        try:
+            result = supabase.rpc(
+                "process_momo_payment",
+                {
+                    "p_ride_id":               payload.ride_id,
+                    "p_driver_id":             payload.driver_id,
+                    "p_transaction_reference": payload.transaction_reference,
+                    "p_amount_ghs":            payload.amount_ghs,
+                },
+            ).execute()
+
+            return {
+                "status":             "payment_processed",
+                "transaction":        result.data,
+            }
+
+        except HTTPException:
+            raise
+        except Exception as e:
+            # Surface DB-level errors (e.g. ride not in ongoing state) as 422
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail=str(e),
+            )
+
+    elif payload.status == "failed":
+        # Acknowledge receipt — prevents provider retry storms.
+        # TODO: notify passenger, optionally reset ride to 'requested'.
+        return {
+            "status":  "payment_failed_acknowledged",
+            "ride_id": payload.ride_id,
+        }
+
+    else:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Unrecognised payment status: '{payload.status}'. Expected 'success' or 'failed'.",
+        )

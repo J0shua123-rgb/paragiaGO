@@ -1,0 +1,70 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* Critical layout rules — outside @layer so they apply unconditionally */
+html, body {
+  height: 100%;
+  margin: 0;
+  padding: 0;
+  overflow: hidden;
+  background-color: #F4F6F9;
+  font-family: 'Inter', system-ui, sans-serif;
+  color: #1A202C;
+  -webkit-tap-highlight-color: transparent;
+}
+#root {
+  height: 100%;
+  width: 100%;
+  overflow: hidden;
+}
+
+@layer base {
+  * { box-sizing: border-box; }
+}
+
+@layer utilities {
+  .glass {
+    background: rgba(255, 255, 255, 0.05);
+    backdrop-filter: blur(20px);
+    -webkit-backdrop-filter: blur(20px);
+    border: 1px solid rgba(255, 255, 255, 0.08);
+  }
+  .glass-dark {
+    background: rgba(10, 15, 30, 0.85);
+    backdrop-filter: blur(24px);
+    -webkit-backdrop-filter: blur(24px);
+    border: 1px solid rgba(255, 255, 255, 0.06);
+  }
+  .text-gradient {
+    background: linear-gradient(135deg, #00C851, #00E5FF);
+    -webkit-background-clip: text;
+    -webkit-text-fill-color: transparent;
+    background-clip: text;
+  }
+  .glow-green {
+    box-shadow: 0 0 20px rgba(0, 200, 81, 0.35), 0 0 60px rgba(0, 200, 81, 0.15);
+  }
+  .glow-gold {
+    box-shadow: 0 0 20px rgba(255, 179, 0, 0.35);
+  }
+  .sheet-shadow {
+    box-shadow: 0 -20px 60px rgba(0, 0, 0, 0.6), 0 -4px 20px rgba(0, 0, 0, 0.4);
+  }
+  .no-scrollbar::-webkit-scrollbar { display: none; }
+  .no-scrollbar { -ms-overflow-style: none; scrollbar-width: none; }
+}
+
+/* Ripple on map taps */
+@keyframes rippleExpand {
+  0%   { transform: scale(0.4); opacity: 1; }
+  100% { transform: scale(3);   opacity: 0; }
+}
+.map-ripple {
+  animation: rippleExpand 1.6s ease-out infinite;
+}
+
+/* OTP input focus ring */
+input[type="number"]::-webkit-outer-spin-button,
+input[type="number"]::-webkit-inner-spin-button { -webkit-appearance: none; }
+input[type="number"] { -moz-appearance: textfield; }
